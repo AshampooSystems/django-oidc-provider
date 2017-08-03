@@ -34,6 +34,22 @@ class DefaultSettings(object):
         return 'oidc_provider.lib.utils.common.default_after_userlogin_hook'
 
     @property
+    def OIDC_AFTER_GENERATE_AUTHORIZATION_CODE_HOOK(self):
+        """
+        OPTIONAL.  Provide a way to plug into the process after
+        the authorization code has been generated
+        """
+        return 'oidc_provider.lib.utils.common.default_after_generate_authorization_code_hook'
+
+    @property
+    def OIDC_AFTER_GENERATE_TOKEN_HOOK(self):
+        """
+        OPTIONAL.  Provide a way to plug into the process after
+        the tokens have been generated
+        """
+        return 'oidc_provider.lib.utils.common.default_after_generate_token_hook'
+
+    @property
     def OIDC_AFTER_END_SESSION_HOOK(self):
         """
         OPTIONAL.  Provide a way to plug into the end session process just before calling

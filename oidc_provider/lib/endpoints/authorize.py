@@ -4,6 +4,7 @@ from hashlib import (
     sha256,
 )
 import logging
+
 try:
     from urllib import urlencode
     from urlparse import urlsplit, parse_qs, urlunsplit
@@ -28,7 +29,7 @@ from oidc_provider.lib.utils.token import (
 from oidc_provider.models import (
     Client,
     UserConsent,
-)
+    Code, Token)
 from oidc_provider import settings
 from oidc_provider.lib.utils.common import get_browser_state_or_default
 
@@ -103,7 +104,7 @@ class AuthorizeEndpoint(object):
             raise AuthorizeError(self.params['redirect_uri'], 'unsupported_response_type', self.grant_type)
 
         if not self.is_authentication and \
-        (self.grant_type == 'hybrid' or self.params['response_type'] in ['id_token', 'id_token token']):
+                (self.grant_type == 'hybrid' or self.params['response_type'] in ['id_token', 'id_token token']):
             logger.debug('[Authorize] Missing openid scope.')
             raise AuthorizeError(self.params['redirect_uri'], 'invalid_scope', self.grant_type)
 
@@ -135,6 +136,21 @@ class AuthorizeEndpoint(object):
                     is_authentication=self.is_authentication,
                     code_challenge=self.params['code_challenge'],
                     code_challenge_method=self.params['code_challenge_method'])
+
+                hook_resp = settings.get('OIDC_AFTER_GENERATE_AUTHORIZATION_CODE_HOOK', import_str=True)(
+                    code=code,
+                    request=self.request,
+                    user=self.request.user,
+                    client=self.client,
+                    scope=self.params['scope'],
+                    nonce=self.params['nonce'],
+                    is_authentication=self.is_authentication,
+                    code_challenge=self.params['code_challenge'],
+                    code_challenge_method=self.params['code_challenge_method']
+                )
+                if type(hook_resp) is Code:
+                    code = hook_resp
+
                 code.save()
 
             if self.grant_type == 'authorization_code':
@@ -145,6 +161,16 @@ class AuthorizeEndpoint(object):
                     user=self.request.user,
                     client=self.client,
                     scope=self.params['scope'])
+
+                hook_resp = settings.get('OIDC_AFTER_GENERATE_TOKEN_HOOK', import_str=True)(
+                    token=token,
+                    endpoint=self,
+                    user=self.request.user,
+                    client=self.client,
+                    scope=self.params['scope']
+                )
+                if type(hook_resp) is Token:
+                    token = hook_resp
 
                 # Check if response_type must include access_token in the response.
                 if self.params['response_type'] in ['id_token token', 'token', 'code token', 'code id_token token']:
@@ -165,7 +191,8 @@ class AuthorizeEndpoint(object):
                     id_token_dic = create_id_token(**kwargs)
 
                     # Check if response_type must include id_token in the response.
-                    if self.params['response_type'] in ['id_token', 'id_token token', 'code id_token', 'code id_token token']:
+                    if self.params['response_type'] in ['id_token', 'id_token token', 'code id_token',
+                                                        'code id_token token']:
                         query_fragment['id_token'] = encode_id_token(id_token_dic, self.client)
                 else:
                     id_token_dic = {}
@@ -211,7 +238,8 @@ class AuthorizeEndpoint(object):
             logger.exception('[Authorize] Error when trying to create response uri: %s', error)
             raise AuthorizeError(self.params['redirect_uri'], 'server_error', self.grant_type)
 
-        uri = uri._replace(query=urlencode(query_params, doseq=True), fragment=uri.fragment + urlencode(query_fragment, doseq=True))
+        uri = uri._replace(query=urlencode(query_params, doseq=True),
+                           fragment=uri.fragment + urlencode(query_fragment, doseq=True))
 
         return urlunsplit(uri)
 
@@ -264,7 +292,8 @@ class AuthorizeEndpoint(object):
         """
         scopes = StandardScopeClaims.get_scopes_info(self.params['scope'])
         if settings.get('OIDC_EXTRA_SCOPE_CLAIMS'):
-            scopes_extra = settings.get('OIDC_EXTRA_SCOPE_CLAIMS', import_str=True).get_scopes_info(self.params['scope'])
+            scopes_extra = settings.get('OIDC_EXTRA_SCOPE_CLAIMS', import_str=True).get_scopes_info(
+                self.params['scope'])
             for index_extra, scope_extra in enumerate(scopes_extra):
                 for index, scope in enumerate(scopes[:]):
                     if scope_extra['scope'] == scope['scope']:
