@@ -36,6 +36,44 @@ Return ``None`` if you want to continue with the flow.
 The typical situation will be checking some state of the user or maybe redirect him somewhere.
 With request you have access to all OIDC parameters. Remember that if you redirect the user to another place then you need to take him back to the authorize endpoint (use ``request.get_full_path()`` as the value for a "next" parameter).
 
+OIDC_AFTER_GENERATE_AUTHORIZATION_CODE_HOOK
+=========================
+
+OPTIONAL. ``str``. A string with the location of your function. Provide a way to plug into the process after the authorization code has been generated.
+
+Default is::
+
+    def default_hook_func(
+        code,
+        request,
+        user,
+        client,
+        scope,
+        nonce,
+        is_authentication,
+        code_challenge,
+        code_challenge_method):
+        return None
+
+Return ``Code`` if you want to replace the generated Code or edit the code directly via the parameter reference.
+
+OIDC_AFTER_GENERATE_TOKEN_HOOK
+=========================
+
+OPTIONAL. ``str``. A string with the location of your function. Provide a way to plug into the process after the tokens have been generated.
+
+Default is::
+
+    def default_hook_func(
+        token,
+        endpoint,
+        user,
+        client,
+        scopes):
+        return None
+
+Return ``Token`` if you want to replace the generated Token or edit the token directly via the parameter reference.
+
 OIDC_AFTER_END_SESSION_HOOK
 ===========================
 
