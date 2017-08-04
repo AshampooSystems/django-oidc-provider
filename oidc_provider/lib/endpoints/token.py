@@ -209,7 +209,7 @@ class TokenEndpoint(object):
             endpoint=self,
             user=self.request.user,
             client=self.client,
-            scope=self.params['scope']
+            scope=self.code.scope
         )
         if type(hook_resp) is Token:
             token = hook_resp
