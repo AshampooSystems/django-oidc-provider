@@ -105,6 +105,16 @@ def default_after_generate_token_hook(
     return None
 
 
+def default_validate_code_hook(
+        endpoint
+):
+    """
+    Default function for setting OIDC_VALIDATE_CODE_HOOK
+    :return:
+    """
+    return None
+
+
 def default_after_end_session_hook(request, id_token=None, post_logout_redirect_uri=None, state=None, client=None, next_page=None):
     """
     Default function for setting OIDC_AFTER_END_SESSION_HOOK.

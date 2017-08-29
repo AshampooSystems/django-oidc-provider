@@ -50,6 +50,13 @@ class DefaultSettings(object):
         return 'oidc_provider.lib.utils.common.default_after_generate_token_hook'
 
     @property
+    def OIDC_VALIDATE_CODE_HOOK(self):
+        """
+        OPTIONAL.  Provide a way to plug into the code validation of the token endpoint
+        """
+        return 'oidc_provider.lib.utils.common.default_validate_code_hook'
+
+    @property
     def OIDC_AFTER_END_SESSION_HOOK(self):
         """
         OPTIONAL.  Provide a way to plug into the end session process just before calling

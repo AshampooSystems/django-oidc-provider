@@ -137,6 +137,7 @@ class AuthorizeEndpoint(object):
                     code_challenge=self.params['code_challenge'],
                     code_challenge_method=self.params['code_challenge_method'])
 
+                code.save()
                 hook_resp = settings.get('OIDC_AFTER_GENERATE_AUTHORIZATION_CODE_HOOK', import_str=True)(
                     code=code,
                     request=self.request,
@@ -150,8 +151,6 @@ class AuthorizeEndpoint(object):
                 )
                 if type(hook_resp) is Code:
                     code = hook_resp
-
-                code.save()
 
             if self.grant_type == 'authorization_code':
                 query_params['code'] = code.code
