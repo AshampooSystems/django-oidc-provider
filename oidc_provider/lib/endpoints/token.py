@@ -96,7 +96,13 @@ class TokenEndpoint(object):
                 raise TokenError('invalid_client')
 
             try:
-                self.code = Code.objects.get(code=self.params['code'])
+                hook_resp = settings.get('OIDC_VALIDATE_CODE_HOOK', import_str=True)(
+                    endpoint=self,
+                )
+                if type(hook_resp) is Code:
+                    self.code = hook_resp
+                else:
+                    self.code = Code.objects.get(code=self.params['code'])
             except Code.DoesNotExist:
                 logger.debug('[Token] Code does not exist: %s', self.params['code'])
                 raise TokenError('invalid_grant')
@@ -166,16 +172,6 @@ class TokenEndpoint(object):
             self.client,
             self.params['scope'].split(' '))
 
-        hook_resp = settings.get('OIDC_AFTER_GENERATE_TOKEN_HOOK', import_str=True)(
-            token=token,
-            endpoint=self,
-            user=self.request.user,
-            client=self.client,
-            scope=self.params['scope']
-        )
-        if type(hook_resp) is Token:
-            token = hook_resp
-
         id_token_dic = create_id_token(
             user=self.user,
             aud=self.client.client_id,
@@ -187,6 +183,16 @@ class TokenEndpoint(object):
 
         token.id_token = id_token_dic
         token.save()
+
+        hook_resp = settings.get('OIDC_AFTER_GENERATE_TOKEN_HOOK', import_str=True)(
+            token=token,
+            endpoint=self,
+            user=self.request.user,
+            client=self.client,
+            scope=self.params['scope']
+        )
+        if type(hook_resp) is Token:
+            token = hook_resp
 
         return {
             'access_token': token.access_token,
@@ -257,16 +263,6 @@ class TokenEndpoint(object):
             client=self.token.client,
             scope=scope)
 
-        hook_resp = settings.get('OIDC_AFTER_GENERATE_TOKEN_HOOK', import_str=True)(
-            token=token,
-            endpoint=self,
-            user=self.request.user,
-            client=self.client,
-            scope=self.params['scope']
-        )
-        if type(hook_resp) is Token:
-            token = hook_resp
-
         # If the Token has an id_token it's an Authentication request.
         if self.token.id_token:
             id_token_dic = create_id_token(
@@ -283,6 +279,16 @@ class TokenEndpoint(object):
 
         # Store the token.
         token.save()
+
+        hook_resp = settings.get('OIDC_AFTER_GENERATE_TOKEN_HOOK', import_str=True)(
+            token=token,
+            endpoint=self,
+            user=self.request.user,
+            client=self.client,
+            scope=self.params['scope']
+        )
+        if type(hook_resp) is Token:
+            token = hook_resp
 
         # Forget the old token.
         self.token.delete()
