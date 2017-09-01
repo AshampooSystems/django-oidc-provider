@@ -103,6 +103,14 @@ class AuthorizeEndpoint(object):
             logger.debug('[Authorize] Invalid response type: %s', self.params['response_type'])
             raise AuthorizeError(self.params['redirect_uri'], 'unsupported_response_type', self.grant_type)
 
+        # Scope validation hook
+        scope_validated = settings.get('OIDC_VALIDATE_SCOPE_HOOK', import_str=True)(
+            scopes=self.params['scope'],
+            endpoint=self
+        )
+        if not scope_validated:
+            raise AuthorizeError(self.params['redirect_uri'], 'invalid_scope', self.grant_type)
+
         if not self.is_authentication and \
                 (self.grant_type == 'hybrid' or self.params['response_type'] in ['id_token', 'id_token token']):
             logger.debug('[Authorize] Missing openid scope.')

@@ -57,6 +57,13 @@ class DefaultSettings(object):
         return 'oidc_provider.lib.utils.common.default_validate_code_hook'
 
     @property
+    def OIDC_VALIDATE_SCOPE_HOOK(self):
+        """
+        OPTIONAL.  Provide a way to plug into the scope validation of the authorize endpoint
+        """
+        return 'oidc_provider.lib.utils.common.default_validate_scope_hook'
+
+    @property
     def OIDC_AFTER_END_SESSION_HOOK(self):
         """
         OPTIONAL.  Provide a way to plug into the end session process just before calling
