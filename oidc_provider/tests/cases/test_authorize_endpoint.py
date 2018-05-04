@@ -13,7 +13,10 @@ from mock import patch, mock
 
 from django.contrib.auth.models import AnonymousUser
 from django.core.management import call_command
-from django.core.urlresolvers import reverse
+try:
+    from django.urls import reverse
+except ImportError:
+    from django.core.urlresolvers import reverse
 from django.test import (
     RequestFactory,
     override_settings,
@@ -34,7 +37,9 @@ from oidc_provider.lib.endpoints.authorize import AuthorizeEndpoint
 
 class AuthorizeEndpointMixin(object):
 
-    def _auth_request(self, method, data={}, is_user_authenticated=False):
+    def _auth_request(self, method, data=None, is_user_authenticated=False):
+        if data is None:
+            data = {}
         url = reverse('oidc_provider:authorize')
 
         if method.lower() == 'get':
@@ -65,9 +70,11 @@ class AuthorizationCodeFlowTestCase(TestCase, AuthorizeEndpointMixin):
         self.factory = RequestFactory()
         self.user = create_fake_user()
         self.client = create_fake_client(response_type='code')
-        self.client_with_no_consent = create_fake_client(response_type='code', require_consent=False)
+        self.client_with_no_consent = create_fake_client(
+            response_type='code', require_consent=False)
         self.client_public = create_fake_client(response_type='code', is_public=True)
-        self.client_public_with_no_consent = create_fake_client(response_type='code', is_public=True, require_consent=False)
+        self.client_public_with_no_consent = create_fake_client(
+            response_type='code', is_public=True, require_consent=False)
         self.state = uuid.uuid4().hex
         self.nonce = uuid.uuid4().hex
 
@@ -163,8 +170,7 @@ class AuthorizationCodeFlowTestCase(TestCase, AuthorizeEndpointMixin):
 
         for key, value in iter(to_check.items()):
             is_input_ok = input_html.format(key, value) in response.content.decode('utf-8')
-            self.assertEqual(is_input_ok, True,
-                msg='Hidden input for "' + key + '" fails.')
+            self.assertEqual(is_input_ok, True, msg='Hidden input for "' + key + '" fails.')
 
     def test_user_consent_response(self):
         """
@@ -194,7 +200,8 @@ class AuthorizationCodeFlowTestCase(TestCase, AuthorizeEndpointMixin):
         # Because user doesn't allow app, SHOULD exists an error parameter
         # in the query.
         self.assertIn('error=', response['Location'], msg='error param is missing in query.')
-        self.assertIn('access_denied', response['Location'], msg='"access_denied" code is missing in query.')
+        self.assertIn(
+            'access_denied', response['Location'], msg='"access_denied" code is missing in query.')
 
         # Simulate user authorization.
         data['allow'] = 'Accept'  # Will be the value of the button.
@@ -204,8 +211,7 @@ class AuthorizationCodeFlowTestCase(TestCase, AuthorizeEndpointMixin):
         is_code_ok = is_code_valid(url=response['Location'],
                                    user=self.user,
                                    client=self.client)
-        self.assertEqual(is_code_ok, True,
-            msg='Code returned is invalid.')
+        self.assertEqual(is_code_ok, True, msg='Code returned is invalid.')
 
         # Check if the state is returned.
         state = (response['Location'].split('state='))[1].split('&')[0]
@@ -276,9 +282,13 @@ class AuthorizationCodeFlowTestCase(TestCase, AuthorizeEndpointMixin):
                                    client=self.client)
         self.assertTrue(is_code_ok, msg='Code returned is invalid or missing')
 
-        self.assertEquals(set(params.keys()), set(['state', 'code']), msg='More than state or code appended as query params')
+        self.assertEquals(
+            set(params.keys()), {'state', 'code'},
+            msg='More than state or code appended as query params')
 
-        self.assertTrue(response['Location'].startswith(self.client.default_redirect_uri), msg='Different redirect_uri returned')
+        self.assertTrue(
+            response['Location'].startswith(self.client.default_redirect_uri),
+            msg='Different redirect_uri returned')
 
     def test_unknown_redirect_uris_are_rejected(self):
         """
@@ -294,7 +304,8 @@ class AuthorizationCodeFlowTestCase(TestCase, AuthorizeEndpointMixin):
         }
 
         response = self._auth_request('get', data)
-        self.assertIn(RedirectUriError.error, response.content.decode('utf-8'), msg='No redirect_uri error')
+        self.assertIn(
+            RedirectUriError.error, response.content.decode('utf-8'), msg='No redirect_uri error')
 
     def test_manipulated_redirect_uris_are_rejected(self):
         """
@@ -310,11 +321,13 @@ class AuthorizationCodeFlowTestCase(TestCase, AuthorizeEndpointMixin):
         }
 
         response = self._auth_request('get', data)
-        self.assertIn(RedirectUriError.error, response.content.decode('utf-8'), msg='No redirect_uri error')
+        self.assertIn(
+            RedirectUriError.error, response.content.decode('utf-8'), msg='No redirect_uri error')
 
     def test_public_client_auto_approval(self):
         """
-        It's recommended not auto-approving requests for non-confidential clients using Authorization Code.
+        It's recommended not auto-approving requests for non-confidential
+        clients using Authorization Code.
         """
         data = {
             'client_id': self.client_public_with_no_consent.client_id,
@@ -330,7 +343,8 @@ class AuthorizationCodeFlowTestCase(TestCase, AuthorizeEndpointMixin):
 
     def test_prompt_none_parameter(self):
         """
-        Specifies whether the Authorization Server prompts the End-User for reauthentication and consent.
+        Specifies whether the Authorization Server prompts the End-User for
+        reauthentication and consent.
         See: http://openid.net/specs/openid-connect-core-1_0.html#AuthRequest
         """
         data = {
@@ -349,13 +363,15 @@ class AuthorizationCodeFlowTestCase(TestCase, AuthorizeEndpointMixin):
 
         response = self._auth_request('get', data, is_user_authenticated=True)
 
-        # An error is returned if the Client does not have pre-configured consent for the requested Claims.
+        # An error is returned if the Client does not have pre-configured
+        # consent for the requested Claims.
         self.assertIn('consent_required', response['Location'])
 
     @patch('oidc_provider.views.django_user_logout')
     def test_prompt_login_parameter(self, logout_function):
         """
-        Specifies whether the Authorization Server prompts the End-User for reauthentication and consent.
+        Specifies whether the Authorization Server prompts the End-User for
+        reauthentication and consent.
         See: http://openid.net/specs/openid-connect-core-1_0.html#AuthRequest
         """
         data = {
@@ -372,7 +388,8 @@ class AuthorizationCodeFlowTestCase(TestCase, AuthorizeEndpointMixin):
         self.assertNotIn(
             quote('prompt=login'),
             response['Location'],
-            "Found prompt=login, this leads to infinite login loop. See https://github.com/juanifioren/django-oidc-provider/issues/197."
+            "Found prompt=login, this leads to infinite login loop. See "
+            "https://github.com/juanifioren/django-oidc-provider/issues/197."
         )
 
         response = self._auth_request('get', data, is_user_authenticated=True)
@@ -381,12 +398,14 @@ class AuthorizationCodeFlowTestCase(TestCase, AuthorizeEndpointMixin):
         self.assertNotIn(
             quote('prompt=login'),
             response['Location'],
-            "Found prompt=login, this leads to infinite login loop. See https://github.com/juanifioren/django-oidc-provider/issues/197."
+            "Found prompt=login, this leads to infinite login loop. See "
+            "https://github.com/juanifioren/django-oidc-provider/issues/197."
         )
 
     def test_prompt_login_none_parameter(self):
         """
-        Specifies whether the Authorization Server prompts the End-User for reauthentication and consent.
+        Specifies whether the Authorization Server prompts the End-User for
+        reauthentication and consent.
         See: http://openid.net/specs/openid-connect-core-1_0.html#AuthRequest
         """
         data = {
@@ -407,7 +426,8 @@ class AuthorizationCodeFlowTestCase(TestCase, AuthorizeEndpointMixin):
     @patch('oidc_provider.views.render')
     def test_prompt_consent_parameter(self, render_patched):
         """
-        Specifies whether the Authorization Server prompts the End-User for reauthentication and consent.
+        Specifies whether the Authorization Server prompts the End-User for
+        reauthentication and consent.
         See: http://openid.net/specs/openid-connect-core-1_0.html#AuthRequest
         """
         data = {
@@ -424,11 +444,13 @@ class AuthorizationCodeFlowTestCase(TestCase, AuthorizeEndpointMixin):
 
         response = self._auth_request('get', data, is_user_authenticated=True)
         render_patched.assert_called_once()
-        self.assertTrue(render_patched.call_args[0][1], settings.get('OIDC_TEMPLATES')['authorize'])
+        self.assertTrue(
+            render_patched.call_args[0][1], settings.get('OIDC_TEMPLATES')['authorize'])
 
     def test_prompt_consent_none_parameter(self):
         """
-        Specifies whether the Authorization Server prompts the End-User for reauthentication and consent.
+        Specifies whether the Authorization Server prompts the End-User for
+        reauthentication and consent.
         See: http://openid.net/specs/openid-connect-core-1_0.html#AuthRequest
         """
         data = {
@@ -445,7 +467,6 @@ class AuthorizationCodeFlowTestCase(TestCase, AuthorizeEndpointMixin):
 
         response = self._auth_request('get', data, is_user_authenticated=True)
         self.assertIn('consent_required', response['Location'])
-
 
 
 class AuthorizationImplicitFlowTestCase(TestCase, AuthorizeEndpointMixin):
@@ -627,7 +648,8 @@ class AuthorizationHybridFlowTestCase(TestCase, AuthorizeEndpointMixin):
         call_command('creatersakey')
         self.factory = RequestFactory()
         self.user = create_fake_user()
-        self.client_code_idtoken_token = create_fake_client(response_type='code id_token token', is_public=True)
+        self.client_code_idtoken_token = create_fake_client(
+            response_type='code id_token token', is_public=True)
         self.state = uuid.uuid4().hex
         self.nonce = uuid.uuid4().hex
 
@@ -692,8 +714,9 @@ class TestCreateResponseURI(TestCase):
     @patch('oidc_provider.lib.endpoints.authorize.logger.exception')
     def test_create_response_uri_logs_to_error(self, log_exception, create_code):
         """
-        A lot can go wrong when creating a response uri and this is caught with a general Exception error. The
-        information contained within this error should show up in the error log so production servers have something
+        A lot can go wrong when creating a response uri and this is caught
+        with a general Exception error. The information contained within this
+        error should show up in the error log so production servers have something
         to work with when things don't work as expected.
         """
         exception = Exception("Something went wrong!")
@@ -705,7 +728,8 @@ class TestCreateResponseURI(TestCase):
         with self.assertRaises(Exception):
             authorization_endpoint.create_response_uri()
 
-        log_exception.assert_called_once_with('[Authorize] Error when trying to create response uri: %s', exception)
+        log_exception.assert_called_once_with(
+            '[Authorize] Error when trying to create response uri: %s', exception)
 
     @override_settings(OIDC_SESSION_MANAGEMENT_ENABLE=True)
     def test_create_response_uri_generates_session_state_if_session_management_enabled(self):

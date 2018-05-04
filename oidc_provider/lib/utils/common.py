@@ -1,14 +1,15 @@
 from hashlib import sha224
 
-from django.core.urlresolvers import reverse
+import django
 from django.http import HttpResponse
 
 from oidc_provider import settings
 
-try:
-    from urlparse import urlsplit, urlunsplit
-except ImportError:
-    from urllib.parse import urlsplit, urlunsplit
+
+if django.VERSION >= (1, 11):
+    from django.urls import reverse
+else:
+    from django.core.urlresolvers import reverse
 
 
 def redirect(uri):
@@ -75,23 +76,28 @@ def default_after_userlogin_hook(request, user, client):
     return None
 
 
-def default_after_end_session_hook(request, id_token=None, post_logout_redirect_uri=None, state=None, client=None, next_page=None):
+def default_after_end_session_hook(
+        request, id_token=None, post_logout_redirect_uri=None,
+        state=None, client=None, next_page=None):
     """
     Default function for setting OIDC_AFTER_END_SESSION_HOOK.
 
     :param request: Django request object
     :type request: django.http.HttpRequest
 
-    :param id_token: token passed by `id_token_hint` url query param - do NOT trust this param or validate token
+    :param id_token: token passed by `id_token_hint` url query param.
+                     Do NOT trust this param or validate token
     :type id_token: str
 
-    :param post_logout_redirect_uri: redirect url from url query param - do NOT trust this param
+    :param post_logout_redirect_uri: redirect url from url query param.
+                                     Do NOT trust this param
     :type post_logout_redirect_uri: str
 
     :param state: state param from url query params
     :type state: str
 
-    :param client: If id_token has `aud` param and associated Client exists, this is an instance of it - do NOT trust this param
+    :param client: If id_token has `aud` param and associated Client exists,
+        this is an instance of it - do NOT trust this param
     :type client: oidc_provider.models.Client
 
     :param next_page: calculated next_page redirection target
@@ -117,9 +123,31 @@ def default_idtoken_processing_hook(id_token, user):
     return id_token
 
 
+def default_introspection_processing_hook(introspection_response, client, id_token):
+    """
+    Hook to customise the returned data from the token introspection endpoint
+    :param introspection_response:
+    :param client:
+    :param id_token:
+    :return:
+    """
+    return introspection_response
+
+
 def get_browser_state_or_default(request):
     """
     Determine value to use as session state.
     """
-    key = request.session.session_key or settings.get('OIDC_UNAUTHENTICATED_SESSION_MANAGEMENT_KEY')
+    key = (request.session.session_key or
+           settings.get('OIDC_UNAUTHENTICATED_SESSION_MANAGEMENT_KEY'))
     return sha224(key.encode('utf-8')).hexdigest()
+
+
+def run_processing_hook(subject, hook_settings_name, **kwargs):
+    processing_hook = settings.get(hook_settings_name)
+    if isinstance(processing_hook, (list, tuple)):
+        for hook in processing_hook:
+            subject = settings.import_from_str(hook)(subject, **kwargs)
+    else:
+        subject = settings.import_from_str(processing_hook)(subject, **kwargs)
+    return subject
