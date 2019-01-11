@@ -3,23 +3,31 @@ import time
 import uuid
 
 from base64 import b64encode
+
 try:
     from urllib.parse import urlencode
 except ImportError:
     from urllib import urlencode
 
 from django.core.management import call_command
-from django.core.urlresolvers import reverse
+from django.http import JsonResponse
+try:
+    from django.urls import reverse
+except ImportError:
+    from django.core.urlresolvers import reverse
 from django.test import (
     RequestFactory,
     override_settings,
 )
 from django.test import TestCase
+from django.views.decorators.http import require_http_methods
 from jwkest.jwk import KEYS
 from jwkest.jws import JWS
 from jwkest.jwt import JWT
-from mock import patch, Mock
+from mock import patch
 
+from oidc_provider.lib.endpoints.introspection import INTROSPECTION_SCOPE
+from oidc_provider.lib.utils.oauth2 import protected_resource_view
 from oidc_provider.lib.utils.token import create_code
 from oidc_provider.models import Token
 from oidc_provider.tests.app.utils import (
@@ -48,6 +56,7 @@ class TokenTestCase(TestCase):
         call_command('creatersakey')
         self.factory = RequestFactory()
         self.user = create_fake_user()
+        self.request_client = self.client
         self.client = create_fake_client(response_type='code')
 
     def _password_grant_post_data(self, scope=None):
@@ -101,7 +110,8 @@ class TokenTestCase(TestCase):
         """
         url = reverse('oidc_provider:token')
 
-        request = self.factory.post(url,
+        request = self.factory.post(
+            url,
             data=urlencode(post_data),
             content_type='application/x-www-form-urlencoded',
             **extras)
@@ -147,28 +157,6 @@ class TokenTestCase(TestCase):
         auth = b'Basic ' + b64encode(user_pass.encode('utf-8'))
         auth_header = {'HTTP_AUTHORIZATION': auth.decode('utf-8')}
         return auth_header
-
-    # Resource Owner Password Credentials Grant
-    # requirements to satisfy in all test_password_grant methods
-    # https://tools.ietf.org/html/rfc6749#section-4.3.2
-    #
-    # grant_type
-    #       REQUIRED.  Value MUST be set to "password".
-    # username
-    #       REQUIRED.  The resource owner username.
-    # password
-    #       REQUIRED.  The resource owner password.
-    # scope
-    #       OPTIONAL.  The scope of the access request as described by
-    #       Section 3.3.
-    #
-    # The authorization server MUST:
-    # o  require client authentication for confidential clients or for any
-    #    client that was issued client credentials (or with other
-    #    authentication requirements),
-    # o  authenticate the client if client authentication is included, and
-    # o  validate the resource owner password credentials using its
-    #    existing password validation algorithm.
 
     def test_default_setting_does_not_allow_grant_type_password(self):
         post_data = self._password_grant_post_data()
@@ -250,7 +238,8 @@ class TokenTestCase(TestCase):
         )
 
         response_dict = json.loads(response.content.decode('utf-8'))
-        id_token = JWS().verify_compact(response_dict['id_token'].encode('utf-8'), self._get_keys())
+        id_token = JWS().verify_compact(
+            response_dict['id_token'].encode('utf-8'), self._get_keys())
 
         token = Token.objects.get(user=self.user)
         self.assertEqual(response_dict['access_token'], token.access_token)
@@ -269,6 +258,17 @@ class TokenTestCase(TestCase):
                 self.assertIn(claim, userinfo)
             else:
                 self.assertNotIn(claim, userinfo)
+
+    @override_settings(OIDC_GRANT_TYPE_PASSWORD_ENABLE=True,
+                       AUTHENTICATION_BACKENDS=("oidc_provider.tests.app.utils.TestAuthBackend",))
+    def test_password_grant_passes_request_to_backend(self):
+        response = self._post_request(
+            post_data=self._password_grant_post_data(),
+            extras=self._password_grant_auth_header()
+        )
+
+        response_dict = json.loads(response.content.decode('utf-8'))
+        self.assertIn('access_token', response_dict)
 
     @override_settings(OIDC_TOKEN_EXPIRE=720)
     def test_authorization_code(self):
@@ -295,17 +295,19 @@ class TokenTestCase(TestCase):
         self.assertEqual(id_token['sub'], str(self.user.id))
         self.assertEqual(id_token['aud'], self.client.client_id)
 
-    @override_settings(OIDC_TOKEN_EXPIRE=720)
+    @override_settings(OIDC_TOKEN_EXPIRE=720,
+                       OIDC_IDTOKEN_INCLUDE_CLAIMS=True)
     def test_scope_is_ignored_for_auth_code(self):
         """
         Scope is ignored for token respones to auth code grant type.
+        This comes down to that the scopes requested in authorize are returned.
         """
         SIGKEYS = self._get_keys()
-        for code_scope in [['openid'], ['openid', 'email']]:
+        for code_scope in [['openid'], ['openid', 'email'], ['openid', 'profile']]:
             code = self._create_code(code_scope)
 
             post_data = self._auth_code_post_data(
-                code=code.code, scope=['openid', 'profile'])
+                code=code.code, scope=code_scope)
 
             response = self._post_request(post_data)
             response_dic = json.loads(response.content.decode('utf-8'))
@@ -316,8 +318,14 @@ class TokenTestCase(TestCase):
 
             if 'email' in code_scope:
                 self.assertIn('email', id_token)
+                self.assertIn('email_verified', id_token)
             else:
                 self.assertNotIn('email', id_token)
+
+            if 'profile' in code_scope:
+                self.assertIn('given_name', id_token)
+            else:
+                self.assertNotIn('given_name', id_token)
 
     def test_refresh_token(self):
         """
@@ -347,6 +355,7 @@ class TokenTestCase(TestCase):
         """
         self.do_refresh_token_check(scope=['openid'])
 
+    @override_settings(OIDC_IDTOKEN_INCLUDE_CLAIMS=True)
     def do_refresh_token_check(self, scope=None):
         SIGKEYS = self._get_keys()
 
@@ -371,7 +380,7 @@ class TokenTestCase(TestCase):
 
         response_dic2 = json.loads(response.content.decode('utf-8'))
 
-        if scope and set(scope) - set(code.scope): # too broad scope
+        if scope and set(scope) - set(code.scope):  # too broad scope
             self.assertEqual(response.status_code, 400)  # Bad Request
             self.assertIn('error', response_dic2)
             self.assertEqual(response_dic2['error'], 'invalid_scope')
@@ -427,7 +436,6 @@ class TokenTestCase(TestCase):
         See http://openid.net/specs/openid-connect-core-1_0.html#AuthRequest and
         http://openid.net/specs/openid-connect-core-1_0.html#HybridTokenRequest.
         """
-        SIGKEYS = self._get_keys()
         code = self._create_code()
         post_data = self._auth_code_post_data(code=code.code)
 
@@ -465,15 +473,17 @@ class TokenTestCase(TestCase):
         for request in requests:
             response = TokenView.as_view()(request)
 
-            self.assertEqual(response.status_code == 405, True,
+            self.assertEqual(
+                response.status_code, 405,
                 msg=request.method + ' request does not return a 405 status.')
 
         request = self.factory.post(url)
 
         response = TokenView.as_view()(request)
 
-        self.assertEqual(response.status_code == 400, True,
-                msg=request.method + ' request does not return a 400 status.')
+        self.assertEqual(
+            response.status_code, 400,
+            msg=request.method + ' request does not return a 400 status.')
 
     def test_client_authentication(self):
         """
@@ -490,9 +500,10 @@ class TokenTestCase(TestCase):
 
         response = self._post_request(post_data)
 
-        self.assertEqual('invalid_client' in response.content.decode('utf-8'),
-                False,
-                msg='Client authentication fails using request-body credentials.')
+        self.assertNotIn(
+            'invalid_client',
+            response.content.decode('utf-8'),
+            msg='Client authentication fails using request-body credentials.')
 
         # Now, test with an invalid client_id.
         invalid_data = post_data.copy()
@@ -504,9 +515,10 @@ class TokenTestCase(TestCase):
 
         response = self._post_request(invalid_data)
 
-        self.assertEqual('invalid_client' in response.content.decode('utf-8'),
-                True,
-                msg='Client authentication success with an invalid "client_id".')
+        self.assertIn(
+            'invalid_client',
+            response.content.decode('utf-8'),
+            msg='Client authentication success with an invalid "client_id".')
 
         # Now, test using HTTP Basic Authentication method.
         basicauth_data = post_data.copy()
@@ -521,9 +533,10 @@ class TokenTestCase(TestCase):
         response = self._post_request(basicauth_data, self._password_grant_auth_header())
         response.content.decode('utf-8')
 
-        self.assertEqual('invalid_client' in response.content.decode('utf-8'),
-                False,
-                msg='Client authentication fails using HTTP Basic Auth.')
+        self.assertNotIn(
+            'invalid_client',
+            response.content.decode('utf-8'),
+            msg='Client authentication fails using HTTP Basic Auth.')
 
     def test_access_token_contains_nonce(self):
         """
@@ -588,9 +601,10 @@ class TokenTestCase(TestCase):
         response = self._post_request(post_data)
         response_dic = json.loads(response.content.decode('utf-8'))
 
-        id_token = JWS().verify_compact(response_dic['id_token'].encode('utf-8'), RSAKEYS)
+        JWS().verify_compact(response_dic['id_token'].encode('utf-8'), RSAKEYS)
 
-    @override_settings(OIDC_IDTOKEN_SUB_GENERATOR='oidc_provider.tests.app.utils.fake_sub_generator')
+    @override_settings(
+        OIDC_IDTOKEN_SUB_GENERATOR='oidc_provider.tests.app.utils.fake_sub_generator')
     def test_custom_sub_generator(self):
         """
         Test custom function for setting OIDC_IDTOKEN_SUB_GENERATOR.
@@ -606,7 +620,8 @@ class TokenTestCase(TestCase):
 
         self.assertEqual(id_token.get('sub'), self.user.email)
 
-    @override_settings(OIDC_IDTOKEN_PROCESSING_HOOK='oidc_provider.tests.app.utils.fake_idtoken_processing_hook')
+    @override_settings(
+        OIDC_IDTOKEN_PROCESSING_HOOK='oidc_provider.tests.app.utils.fake_idtoken_processing_hook')
     def test_additional_idtoken_processing_hook(self):
         """
         Test custom function for setting OIDC_IDTOKEN_PROCESSING_HOOK.
@@ -715,6 +730,46 @@ class TokenTestCase(TestCase):
         self.assertEqual(id_token.get('test_idtoken_processing_hook2'), FAKE_RANDOM_STRING)
         self.assertEqual(id_token.get('test_idtoken_processing_hook_user_email2'), self.user.email)
 
+    @override_settings(
+        OIDC_IDTOKEN_PROCESSING_HOOK=(
+                'oidc_provider.tests.app.utils.fake_idtoken_processing_hook3'))
+    def test_additional_idtoken_processing_hook_scope_available(self):
+        """
+        Test scope is available in OIDC_IDTOKEN_PROCESSING_HOOK.
+        """
+        id_token = self._request_id_token_with_scope(
+            ['openid', 'email', 'profile', 'dummy'])
+        self.assertEqual(
+            id_token.get('scope_of_token_passed_to_processing_hook'),
+            ['openid', 'email', 'profile', 'dummy'])
+
+    @override_settings(
+        OIDC_IDTOKEN_PROCESSING_HOOK=(
+                'oidc_provider.tests.app.utils.fake_idtoken_processing_hook4'))
+    def test_additional_idtoken_processing_hook_kwargs(self):
+        """
+        Test correct kwargs are passed to OIDC_IDTOKEN_PROCESSING_HOOK.
+        """
+        id_token = self._request_id_token_with_scope(['openid', 'profile'])
+        kwargs_passed = id_token.get('kwargs_passed_to_processing_hook')
+        assert kwargs_passed
+        self.assertTrue(kwargs_passed.get('token').startswith(
+                        '<Token: Some Client -'))
+        self.assertEqual(kwargs_passed.get('request'),
+                         "<WSGIRequest: POST '/openid/token'>")
+        self.assertEqual(set(kwargs_passed.keys()), {'token', 'request'})
+
+    def _request_id_token_with_scope(self, scope):
+        code = self._create_code(scope)
+
+        post_data = self._auth_code_post_data(code=code.code)
+
+        response = self._post_request(post_data)
+
+        response_dic = json.loads(response.content.decode('utf-8'))
+        id_token = JWT().unpack(response_dic['id_token'].encode('utf-8')).payload()
+        return id_token
+
     def test_pkce_parameters(self):
         """
         Test Proof Key for Code Exchange by OAuth Public Clients.
@@ -732,4 +787,82 @@ class TokenTestCase(TestCase):
 
         response = self._post_request(post_data)
 
-        response_dic = json.loads(response.content.decode('utf-8'))
+        json.loads(response.content.decode('utf-8'))
+
+    @override_settings(OIDC_INTROSPECTION_VALIDATE_AUDIENCE_SCOPE=False)
+    def test_client_credentials_grant_type(self):
+        fake_scopes_list = ['scopeone', 'scopetwo', INTROSPECTION_SCOPE]
+
+        # Add scope for this client.
+        self.client.scope = fake_scopes_list
+        self.client.save()
+
+        post_data = {
+            'client_id': self.client.client_id,
+            'client_secret': self.client.client_secret,
+            'grant_type': 'client_credentials',
+        }
+        response = self._post_request(post_data)
+        response_dict = json.loads(response.content.decode('utf-8'))
+
+        # Ensure access token exists in the response, also check if scopes are
+        # the ones we registered previously.
+        self.assertTrue('access_token' in response_dict)
+        self.assertEqual(' '.join(fake_scopes_list), response_dict['scope'])
+
+        access_token = response_dict['access_token']
+
+        # Create a protected resource and test the access_token.
+
+        @require_http_methods(['GET'])
+        @protected_resource_view(fake_scopes_list)
+        def protected_api(request, *args, **kwargs):
+            return JsonResponse({'protected': 'information'}, status=200)
+
+        # Deploy view on some url. So, base url could be anything.
+        request = self.factory.get(
+            '/api/protected/?access_token={0}'.format(access_token))
+        response = protected_api(request)
+        response_dict = json.loads(response.content.decode('utf-8'))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue('protected' in response_dict)
+
+        # Protected resource test ends here.
+
+        # Verify access_token can be validated with token introspection
+
+        response = self.request_client.post(
+            reverse('oidc_provider:token-introspection'), data={'token': access_token},
+            **self._password_grant_auth_header())
+        self.assertEqual(response.status_code, 200)
+        response_dict = json.loads(response.content.decode('utf-8'))
+        self.assertTrue(response_dict.get('active'))
+
+        # End token introspection test
+
+        # Clean scopes for this client.
+        self.client.scope = ''
+        self.client.save()
+
+        response = self._post_request(post_data)
+        response_dict = json.loads(response.content.decode('utf-8'))
+
+        # It should fail when client does not have any scope added.
+        self.assertEqual(400, response.status_code)
+        self.assertEqual('invalid_scope', response_dict['error'])
+
+    def test_printing_token_used_by_client_credentials_grant_type(self):
+        # Add scope for this client.
+        self.client.scope = ['something']
+        self.client.save()
+
+        post_data = {
+            'client_id': self.client.client_id,
+            'client_secret': self.client.client_secret,
+            'grant_type': 'client_credentials',
+        }
+        response = self._post_request(post_data)
+        response_dict = json.loads(response.content.decode('utf-8'))
+        token = Token.objects.get(access_token=response_dict['access_token'])
+        self.assertTrue(str(token))

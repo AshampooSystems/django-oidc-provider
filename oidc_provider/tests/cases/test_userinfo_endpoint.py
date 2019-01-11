@@ -6,7 +6,10 @@ try:
 except ImportError:
     from urllib import urlencode
 
-from django.core.urlresolvers import reverse
+try:
+    from django.urls import reverse
+except ImportError:
+    from django.core.urlresolvers import reverse
 from django.test import RequestFactory
 from django.test import TestCase
 from django.utils import timezone
@@ -30,29 +33,33 @@ class UserInfoTestCase(TestCase):
         self.user = create_fake_user()
         self.client = create_fake_client(response_type='code')
 
-    def _create_token(self, extra_scope=[]):
+    def _create_token(self, extra_scope=None):
         """
         Generate a valid token.
         """
+        if extra_scope is None:
+            extra_scope = []
         scope = ['openid', 'email'] + extra_scope
 
+        token = create_token(
+            user=self.user,
+            client=self.client,
+            scope=scope)
+
         id_token_dic = create_id_token(
+            token=token,
             user=self.user,
             aud=self.client.client_id,
             nonce=FAKE_NONCE,
             scope=scope,
         )
 
-        token = create_token(
-            user=self.user,
-            client=self.client,
-            id_token_dic=id_token_dic,
-            scope=scope)
+        token.id_token = id_token_dic
         token.save()
 
         return token
 
-    def _post_request(self, access_token):
+    def _post_request(self, access_token, schema='Bearer'):
         """
         Makes a request to the userinfo endpoint by sending the
         `post_data` parameters using the 'multipart/form-data'
@@ -60,11 +67,9 @@ class UserInfoTestCase(TestCase):
         """
         url = reverse('oidc_provider:userinfo')
 
-        request = self.factory.post(url,
-            data={},
-            content_type='multipart/form-data')
+        request = self.factory.post(url, data={}, content_type='multipart/form-data')
 
-        request.META['HTTP_AUTHORIZATION'] = 'Bearer ' + access_token
+        request.META['HTTP_AUTHORIZATION'] = schema + ' ' + access_token
 
         response = userinfo(request)
 
@@ -75,6 +80,18 @@ class UserInfoTestCase(TestCase):
 
         # Test a valid request to the userinfo endpoint.
         response = self._post_request(token.access_token)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(bool(response.content), True)
+
+    def test_response_with_valid_token_lowercase_bearer(self):
+        """
+        Some clients expect to be able to pass the token_type value from the token endpoint
+        ("bearer") back to the identity provider unchanged.
+        """
+        token = self._create_token()
+
+        response = self._post_request(token.access_token, schema='bearer')
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(bool(response.content), True)
@@ -136,17 +153,14 @@ class UserInfoTestCase(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(bool(response.content), True)
-        self.assertEqual('given_name' in response_dic, True,
-            msg='"given_name" claim should be in response.')
-        self.assertEqual('profile' in response_dic, False,
-            msg='"profile" claim should not be in response.')
+        self.assertIn('given_name', response_dic, msg='"given_name" claim should be in response.')
+        self.assertNotIn('profile', response_dic, msg='"profile" claim should not be in response.')
 
         # Now adding `address` scope.
         token = self._create_token(extra_scope=['profile', 'address'])
         response = self._post_request(token.access_token)
         response_dic = json.loads(response.content.decode('utf-8'))
 
-        self.assertEqual('address' in response_dic, True,
-            msg='"address" claim should be in response.')
-        self.assertEqual('country' in response_dic['address'], True,
-            msg='"country" claim should be in response.')
+        self.assertIn('address', response_dic, msg='"address" claim should be in response.')
+        self.assertIn(
+            'country', response_dic['address'], msg='"country" claim should be in response.')
